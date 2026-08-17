@@ -26,17 +26,16 @@ Derived from design-log.md Sections 1-2 (normalized requirement + stage graph).
   bounded collision retry (max 5 attempts), URL validation, idempotent creation
   (same `long_url` returns the existing alias rather than minting a new one).
 - **service/app/analytics.py** — click recording + per-alias stats aggregation.
-- **service/app/rate_limit.py** — in-memory fixed-window rate limiter, applied only to link creation.
-- **service/app/main.py** — FastAPI app wiring the three endpoints below.
+- **service/app/main.py** — FastAPI app wiring the endpoints below.
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | /api/links | Create a short link. Accepts optional `custom_alias` and `ttl_seconds`. 201 with `{alias, short_url, long_url, created, expires_at}`. 422 on invalid URL/alias/ttl, 409 on custom-alias conflict, 429 on rate limit exceeded (with `Retry-After`). |
-| GET | /{alias} | Redirect (302) to the original URL; records a click. 404 on unknown alias, 410 on expired alias. Not rate-limited. |
-| GET | /api/links/{alias}/stats | Click count, timestamps, referrers, expires_at for a link. 404 on unknown alias (still readable after expiry). Not rate-limited. |
-| GET | /healthz | Readiness check: verifies DB connectivity. 200 `{"status": "ok"}`, 503 if DB unreachable. Not rate-limited. |
+| POST | /api/links | Create a short link. Accepts optional `custom_alias` and `ttl_seconds`. 201 with `{alias, short_url, long_url, created, expires_at}`. 422 on invalid URL/alias/ttl, 409 on custom-alias conflict. |
+| GET | /{alias} | Redirect (302) to the original URL; records a click. 404 on unknown alias, 410 on expired alias. |
+| GET | /api/links/{alias}/stats | Click count, timestamps, referrers, expires_at for a link. 404 on unknown alias (still readable after expiry). |
+| GET | /healthz | Readiness check: verifies DB connectivity. 200 `{"status": "ok"}`, 503 if DB unreachable. |
 
 ## Reliability characteristics (design-log.md Section 1, ambiguity #5)
 
@@ -71,38 +70,24 @@ Derived from design-log.md Sections 1-2 (normalized requirement + stage graph).
 - Existing DBs created before this feature are migrated in place (`ALTER TABLE` on startup) rather
   than requiring a fresh table — genuinely brownfield: an existing data flow being extended.
 
-## Rate limiting (design-log.md Section 8, brownfield scenario)
-
-- Applies to `POST /api/links` only — creation is the resource-consuming, abuse-prone
-  operation. Redirects and stats reads are deliberately NOT rate-limited; a public
-  redirect service needs those to stay fast and always-available.
-- Fixed-window counter keyed by client IP, default 10 requests / 60 seconds, configurable
-  via `RATE_LIMIT_MAX_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS`.
-- 429 with a `Retry-After` header on exceeded — a well-behaved client can back off
-  correctly rather than guess.
-- In-memory, single-process: does not survive a restart, not shared across multiple
-  app instances — a real limitation for a production deployment, noted in Section 9
-  rather than hidden.
-
 ## Reliability improvements (design-log.md Section 8, ambiguous scenario)
 
 The raw requirement ("make it more reliable") named no concrete feature — disambiguated
 via explicit candidate analysis recorded in the run's decision log (state.json), not just
-here. Two candidates were selected, three deferred with reasons; see decisions for detail.
+here. Two candidates were selected, two deferred with reasons; see decisions for detail.
 
 - **Write-lock retry**: `db.execute_with_retry()` wraps the two hot write paths (link
   creation, click recording) with bounded retry (3 attempts) + exponential backoff on
   SQLite's "database is locked" — a real risk under concurrent load with SQLite's
   single-writer model, previously unhandled anywhere in the codebase. Non-lock
   `OperationalError`s are NOT retried (retrying a genuine bug just delays the failure).
-- **GET /healthz**: verifies DB connectivity (not just process liveness), not rate-limited,
-  reserved in `RESERVED_ALIASES` so a custom alias can never shadow it.
+- **GET /healthz**: verifies DB connectivity (not just process liveness), reserved in
+  `RESERVED_ALIASES` so a custom alias can never shadow it.
 
 ## Out of scope for v1 (design-log.md Section 1)
 
-Auth/ownership — not yet addressed. (Custom aliases, link expiration/TTL, rate
-limiting, and the two reliability improvements above moved from "out of scope"
-to implemented.)
+Auth/ownership — not yet addressed. (Custom aliases, link expiration/TTL, and
+the two reliability improvements above moved from "out of scope" to implemented.)
 """
 
 

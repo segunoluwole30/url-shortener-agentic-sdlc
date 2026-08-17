@@ -6,7 +6,7 @@ SDLC pipeline — requirements → design → implementation/test-planning/docs-
 entry/exit gates, blocking human-approval checkpoints, bounded retry/fallback/
 rollback, and an audit log + metrics tracker. The orchestrator uses that pipeline
 to actually build a URL shortener service, stage by stage, across three scenarios:
-a greenfield feature, two brownfield extensions, and one genuinely ambiguous
+a greenfield feature, a brownfield extension, and one genuinely ambiguous
 requirement.
 
 The orchestration layer (`orchestrator/`) is the graded differentiator; the
@@ -61,11 +61,8 @@ scenario-specific normalization/design/test/doc branch runs (see
 # Greenfield: custom aliases
 .venv/bin/python cli.py run --requirement "Add support for custom aliases so users can choose their own short link instead of a generated one"
 
-# Brownfield 1/2: link expiration / TTL
+# Brownfield: link expiration / TTL
 .venv/bin/python cli.py run --requirement "Add link expiration (TTL) so short links can automatically expire"
-
-# Brownfield 2/2: rate limiting
-.venv/bin/python cli.py run --requirement "Add rate limiting to protect the service from abuse"
 
 # Ambiguous: disambiguated live in the run's decision log, see design-log.md Section 8
 .venv/bin/python cli.py run --requirement "Make it more reliable"
@@ -126,7 +123,7 @@ orchestrator/            # the orchestration engine — the graded differentiato
     implementation.py         # copies+compiles service_app/ templates into service/app/
     test_execution.py         # copies service_tests/ template, actually runs pytest
     templates/                # the actual service source, applied by the stages above
-      service_app/              # FastAPI app: db, shortener, analytics, rate_limit, models, main
+      service_app/              # FastAPI app: db, shortener, analytics, models, main
       service_tests/            # the real pytest suite
 service/                  # built BY the orchestrator, not hand-written
   app/                      # the FastAPI service (copied from orchestrator/stages/templates/)
@@ -142,7 +139,7 @@ FINAL_SUMMARY.md          # plan/rationale/artifacts/risks/assumptions/limitatio
 ## Limitations
 
 See [`design-log.md` Section 9](design-log.md) for the full running list
-(in-memory rate limiting and orchestration-run state, SQLite's single-writer
+(no rate limiting, in-memory orchestration-run state, SQLite's single-writer
 ceiling, no background TTL sweep, no auth/ownership, CLI-blocking approval
 checkpoints, no resume-from-run-id). None of these are hidden — each was
 surfaced explicitly at the point it became relevant, not discovered after the

@@ -254,7 +254,7 @@ completed with `overall_status: complete`.
 redirect through the custom alias, all confirmed against a running server (not
 just `TestClient`).
 
-### Brownfield (1/2) — link expiration / TTL
+### Brownfield — link expiration / TTL
 
 **Requirement (raw):** "Add link expiration (TTL) so short links can automatically expire."
 
@@ -297,53 +297,12 @@ branch, both approvals hit and approved, `test_execution` ran 21 real pytest cas
   time** (not just a backdated DB row): 302 while valid → 410 once the TTL
   genuinely elapsed → stats still 200 afterward.
 
-### Brownfield (2/2) — rate limiting
-
-**Requirement (raw):** "Add rate limiting to protect the service from abuse."
-
-**Codebase reasoning (shown to the user before writing code):** new module
-`service/app/rate_limit.py` (self-contained, not entangled with `db.py`/`shortener.py`
-since this is a cross-cutting HTTP concern, not a domain rule about links), wired into
-`main.py` as a FastAPI dependency on `POST /api/links` only. `requirements.py`/
-`design.py`/`test_planning.py`/`docs_drafting.py` extended with the new scenario
-branch, same pattern as TTL/custom-aliases.
-
-**Key design decisions:**
-- **Scoped to link creation only** — `POST /api/links` is the resource-consuming,
-  abuse-prone operation; `GET /{alias}` redirects are deliberately NOT rate-limited,
-  since a public redirect service needs reads to stay fast and always-available.
-  Verified live: 5 rapid GETs after the creation limit was already exhausted all
-  still returned normally (404 for the nonexistent test aliases used), never 429.
-- **Fixed-window counter keyed by client IP**, in-memory, thread-safe (lock-guarded,
-  same idiom as `orchestrator/runner.py`'s state mutation), configurable via
-  `RATE_LIMIT_MAX_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS` — same env-var override
-  pattern as `SHORTENER_DB_PATH`.
-- **429 with `Retry-After`** on exceeded, so a well-behaved client can back off
-  correctly rather than guess.
-- **In-memory is a real limitation, not an oversight**: doesn't survive a restart,
-  not shared across multiple app instances behind a load balancer. Documented in
-  Section 9 rather than hidden.
-
-**Orchestration:** ran via `python cli.py run --requirement "..."`
-(`runs/run-20260817T163019-0e16a2/`) — `requirements` matched the new rate-limiting
-branch, both approvals hit and approved, `test_execution` ran 24 real pytest cases
-(21 prior + 3 new) and passed, `overall_status: complete`.
-
-**Validation:**
-- Test isolation problem caught and fixed during implementation: the rate limiter's
-  state is process-global (a module-level dict), so without an explicit
-  `rate_limit.reset()` in the test `client` fixture, earlier tests' POSTs would have
-  silently counted against later tests' limits — a real cross-test contamination bug,
-  not hypothetical, since the full suite makes 20+ creation calls across the file.
-- Live `uvicorn` smoke test with `RATE_LIMIT_MAX_REQUESTS=3`: 3 creates succeed, 4th
-  returns 429 with `Retry-After: 60`; 5 rapid redirect requests in the same window
-  are never rate-limited.
 ### Ambiguous — "make it more reliable"
 
 **Requirement (raw):** "Make it more reliable." No concrete feature named — this
 is genuinely ambiguous, unlike the greenfield/brownfield scenarios above.
 
-**Disambiguation reasoning:** recorded as five actual decisions in the run's
+**Disambiguation reasoning:** recorded as four actual decisions in the run's
 decision log (`state.json`, `stage: "requirements"`), not just narrated here —
 see `orchestrator/stages/requirements.py`'s `RELIABILITY_CANDIDATES` and the
 handler loop that turns each candidate into its own `state.add_decision()` call:
@@ -354,7 +313,6 @@ handler loop that turns each candidate into its own `state.add_decision()` call:
 | Operational health/readiness signal (`GET /healthz`, DB-connectivity check) | **SELECTED** | Standard reliability primitive for anything behind a monitor/load balancer; the service had no way to answer "is this instance actually healthy?" at all. |
 | Structured logging / observability | DEFERRED | Orthogonal to the two gaps above; would require deciding a log format/destination/correlation scheme with no specific failure mode driving it today. |
 | Circuit breaker / external dependency resilience | DEFERRED | Not applicable — the service has zero external network dependencies (SQLite is local, in-process); this would solve a failure mode the architecture can't experience. |
-| Distributed rate limiting (shared store across instances) | DEFERRED | A deployment-topology concern, not single-instance reliability; the in-memory limitation was already surfaced explicitly in Section 9 rather than hidden — revisiting it now would be scope creep against an already-accepted trade-off. |
 
 **What got built:**
 - `db.execute_with_retry()`: bounded retry (3 attempts) + exponential backoff,
@@ -364,15 +322,14 @@ handler loop that turns each candidate into its own `state.add_decision()` call:
   creation (`shortener._insert_link`) and click recording
   (`analytics.record_click`).
 - `GET /healthz`: checks DB connectivity (`SELECT 1`), not just process
-  liveness; not rate-limited (monitors need it reachable regardless of
-  creation-endpoint load); `"healthz"` added to `RESERVED_ALIASES` alongside
-  `"api"` so a custom alias can never shadow the route.
+  liveness; `"healthz"` added to `RESERVED_ALIASES` alongside `"api"` so a
+  custom alias can never shadow the route.
 
 **Orchestration:** ran via `python cli.py run --requirement "Make it more
-reliable"` (`runs/run-20260817T164154-cd3bf5/`) — `requirements` correctly
-matched the ambiguous-scenario branch and recorded all five candidate
-decisions, both approvals hit and approved, `test_execution` ran 29 real
-pytest cases (24 prior + 5 new) and passed, `overall_status: complete`.
+reliable"` (`runs/run-20260817T172206-35bfc2/`) — `requirements` correctly
+matched the ambiguous-scenario branch and recorded all four candidate
+decisions, both approvals hit and approved, `test_execution` ran 26 real
+pytest cases (21 prior + 5 new) and passed, `overall_status: complete`.
 
 **Bug caught during implementation:** the first version of the candidate loop
 put the full deferral reasoning into the `verdict` field instead of a short
@@ -382,7 +339,7 @@ reading the generated `state.json` rather than trusting the code, fixed by
 splitting into separate `verdict`/`why` fields, and re-verified.
 
 **Validation:**
-- Full suite 36/36 (7 orchestrator + 29 service).
+- Full suite 33/33 (7 orchestrator + 26 service).
 - Dedicated unit tests for `execute_with_retry`: recovers within budget,
   exhausts and re-raises after max attempts, does NOT retry a non-lock
   `OperationalError` (verified via call-count assertion, not just the
@@ -397,11 +354,10 @@ splitting into separate `verdict`/`why` fields, and re-verified.
 _(Running list — feeds directly into Final Engineering Summary)_
 
 **Service (`service/`):**
-- **Rate limiting is in-memory, single-process** (Section 8, brownfield): doesn't survive
-  a restart, not shared across multiple app instances behind a load balancer. Acceptable
-  for this prototype; a real multi-instance deployment would need a shared store (Redis
-  or similar) — explicitly named and deferred, not the selected fix, in the ambiguous
-  scenario's disambiguation (Section 8).
+- **No rate limiting.** The service has no protection against a client spamming
+  `POST /api/links` — acceptable for this prototype's scope (one brownfield example,
+  chosen to be link expiration/TTL rather than rate limiting), but a real deployment
+  would need one.
 - **SQLite is single-writer.** `db.execute_with_retry()` (Section 8, ambiguous scenario)
   gives bounded resilience against transient lock contention, but doesn't remove the
   ceiling — sustained heavy concurrent write load would still degrade. A production

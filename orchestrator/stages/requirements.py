@@ -54,7 +54,7 @@ CUSTOM_ALIAS_NORMALIZED = (
     "outcome distinct from the existing generation-retry behavior."
 )
 
-# --- Brownfield scenario (1/2): link expiration/TTL (design-log.md Section 8) ---
+# --- Brownfield scenario: link expiration/TTL (design-log.md Section 8) ---
 
 TTL_ASSUMPTIONS = [
     "TTL is opt-in per link via an optional ttl_seconds field on creation; omitting it means the link "
@@ -78,28 +78,6 @@ TTL_NORMALIZED = (
     "Extend link creation (POST /api/links) to accept an optional ttl_seconds, after which the redirect "
     "endpoint treats the alias as gone (410) while preserving the record and its analytics for read access. "
     "Requires a schema migration for links created under the pre-TTL schema."
-)
-
-# --- Brownfield scenario (2/2): rate limiting (design-log.md Section 8) ---
-
-RATE_LIMIT_ASSUMPTIONS = [
-    "Scoped to POST /api/links only — link creation is the resource-consuming, abuse-prone operation; "
-    "GET /{alias} redirects are deliberately NOT rate-limited, since a public redirect service needs "
-    "reads to stay fast and always-available.",
-    "Fixed-window counter keyed by client IP (request.client.host), default 10 requests / 60 seconds, "
-    "configurable via RATE_LIMIT_MAX_REQUESTS / RATE_LIMIT_WINDOW_SECONDS — same env-var override "
-    "pattern already used for SHORTENER_DB_PATH.",
-    "In-memory, single-process state: does not survive a restart and is NOT shared across multiple app "
-    "instances behind a load balancer — acceptable for this prototype, called out explicitly as a "
-    "limitation (design-log.md Section 9) rather than silently assumed away.",
-    "Exceeding the limit returns 429 with a Retry-After header stating when the window resets, so a "
-    "well-behaved client can back off correctly instead of guessing.",
-]
-
-RATE_LIMIT_NORMALIZED = (
-    "Add a request-rate ceiling to link creation (POST /api/links) to protect the service from "
-    "spam/abuse, returning 429 with Retry-After once a client exceeds the configured limit within the "
-    "current time window. Read paths (redirect, stats) are explicitly out of scope for rate limiting."
 )
 
 # --- Ambiguous scenario: "make it more reliable" (design-log.md Section 8) ---
@@ -147,24 +125,14 @@ RELIABILITY_CANDIDATES = [
         "(SQLite is local and in-process), so this would be solving a failure mode the current system "
         "cannot actually experience.",
     ),
-    (
-        "Distributed rate limiting",
-        "Move the existing in-memory rate limiter to a shared store (e.g. Redis) so limits hold across "
-        "multiple app instances.",
-        "DEFERRED",
-        "This addresses horizontal-scaling reliability, a deployment-topology concern orthogonal to a "
-        "single instance's reliability, and the in-memory limitation was already surfaced explicitly in "
-        "design-log.md Section 9 rather than silently ignored; changing it now would be scope creep "
-        "against an already-documented, already-accepted trade-off.",
-    ),
 ]
 
 RELIABILITY_NORMALIZED = (
     "Ambiguous requirement disambiguated to two concrete, testable reliability improvements: (1) bounded "
     "retry with backoff for SQLite write-lock contention on link creation and click recording, and (2) a "
     "GET /healthz endpoint verifying DB connectivity for operational monitoring. Other candidate "
-    "interpretations (structured logging, circuit breakers, distributed rate limiting) were considered "
-    "and explicitly deferred — see this run's decision log for the reasoning behind each."
+    "interpretations (structured logging, circuit breakers) were considered and explicitly deferred — "
+    "see this run's decision log for the reasoning behind each."
 )
 
 RELIABILITY_ASSUMPTIONS = [
@@ -193,11 +161,7 @@ def handler(state: RunState) -> None:
     elif "ttl" in raw_lower or "expir" in raw_lower:
         state.requirement.normalized = TTL_NORMALIZED
         state.requirement.assumptions = list(TTL_ASSUMPTIONS)
-        rationale = "brownfield scenario (1/2): link expiration/TTL (design-log.md Section 8)"
-    elif "rate limit" in raw_lower:
-        state.requirement.normalized = RATE_LIMIT_NORMALIZED
-        state.requirement.assumptions = list(RATE_LIMIT_ASSUMPTIONS)
-        rationale = "brownfield scenario (2/2): rate limiting (design-log.md Section 8)"
+        rationale = "brownfield scenario: link expiration/TTL (design-log.md Section 8)"
     elif "more reliable" in raw_lower or "reliability" in raw_lower:
         state.requirement.normalized = RELIABILITY_NORMALIZED
         state.requirement.assumptions = list(RELIABILITY_ASSUMPTIONS)

@@ -42,9 +42,9 @@ Work was staged in six explicit steps, each reviewed before the next began:
    subprocess rather than recording a simulated pass.
 4. **Greenfield scenario** (custom aliases) — a genuinely new capability, run
    end-to-end through the pipeline.
-5. **Two brownfield scenarios** (link expiration/TTL, then rate limiting) — each
-   preceded by an explicit codebase-reasoning pass (which modules/files it
-   touches, and why) before any code was written, per Core Requirement 3.
+5. **Brownfield scenario** (link expiration/TTL) — preceded by an explicit
+   codebase-reasoning pass (which modules/files it touches, and why) before
+   any code was written, per Core Requirement 3.
 6. **Ambiguous scenario** ("make it more reliable") — disambiguated via explicit
    candidate analysis recorded as real decisions in the run's own decision log
    (`state.json`), not just narrated in this document or as source comments.
@@ -79,9 +79,8 @@ every write — never hand-set by a stage handler.
 
 **Service** (`service/`): FastAPI + SQLite, built entirely by the orchestrator's
 stage handlers via templates in `orchestrator/stages/templates/`. Three core
-endpoints (create/redirect/stats) plus, by the end of the six scenarios, optional
-custom aliases, optional TTL expiration, rate limiting on creation, and a
-`/healthz` readiness check.
+endpoints (create/redirect/stats) plus, by the end of the scenarios, optional
+custom aliases, optional TTL expiration, and a `/healthz` readiness check.
 
 ## 3. Artifacts
 
@@ -92,9 +91,9 @@ custom aliases, optional TTL expiration, rate limiting on creation, and a
   before coding for brownfield, key decisions, orchestration evidence with actual
   run IDs, and validation evidence for all three scenarios).
 - Test suites: `tests/test_orchestrator.py` (7 tests, the engine in isolation) +
-  `service/tests/test_api.py` (29 tests, written by the pipeline's own
+  `service/tests/test_api.py` (26 tests, written by the pipeline's own
   `test_execution` stage and run as subprocess `pytest` on every pipeline run —
-  36 total, all passing as of the last run).
+  33 total, all passing as of the last run).
 - `service/docs/DESIGN.md` + `service/docs/API.md`: written and finalized by the
   pipeline itself (`docs_drafting` → `docs_finalize`, folding in real test
   outcomes), not authored separately.
@@ -108,21 +107,16 @@ custom aliases, optional TTL expiration, rate limiting on creation, and a
   generated-alias collision handling); idempotency scoped to the exact
   `(alias, long_url)` pair so a custom-alias request can't be silently absorbed
   by the existing long_url-based idempotency check.
-- **Brownfield 1/2 — link expiration/TTL:** optional `ttl_seconds`; redirect
+- **Brownfield — link expiration/TTL:** optional `ttl_seconds`; redirect
   returns 410 (expired) vs 404 (never existed) as distinct outcomes; analytics
   stay readable after expiry; existing pre-TTL databases migrate in place via
   `ALTER TABLE` (tested directly against a hand-built legacy DB file).
-- **Brownfield 2/2 — rate limiting:** in-memory fixed-window limiter scoped to
-  `POST /api/links` only (redirects stay unlimited, verified live); 429 with
-  `Retry-After`. Caught and fixed a real cross-test state-leak bug during
-  implementation (the limiter's module-global state needed an explicit reset
-  between tests).
 - **Ambiguous — "make it more reliable":** disambiguated into two selected
   improvements (bounded retry+backoff on SQLite write-lock contention; a
-  DB-connectivity `/healthz` check) and three explicitly deferred candidates
-  (structured logging, circuit breakers, distributed rate limiting), each with a
-  documented reason, recorded as five real decisions in the run's own
-  `state.json` — the disambiguation reasoning is queryable data, not prose.
+  DB-connectivity `/healthz` check) and two explicitly deferred candidates
+  (structured logging, circuit breakers), each with a documented reason,
+  recorded as four real decisions in the run's own `state.json` — the
+  disambiguation reasoning is queryable data, not prose.
 
 Each scenario ran through `python cli.py run --requirement "..."` end-to-end
 (both approvals hit and approved, `overall_status: complete`) and was validated
@@ -145,14 +139,14 @@ live in the run's `state.json` under `requirement.assumptions`.
 
 Full list in [`design-log.md` Section 9`](design-log.md); summarized:
 
-**Service:** rate limiting and orchestration-run state are both in-memory/
-single-process (won't survive a restart or scale across instances); SQLite's
-single-writer model means bounded retry mitigates but doesn't eliminate
-write-lock contention under sustained heavy load; expired links are never
-actively purged (no background sweep); a small TOCTOU window exists on
-custom-alias creation (mitigated at the DB-constraint level, not eliminated at
-the pre-check level); no auth/ownership; the reserved-alias list is manually
-maintained per new route.
+**Service:** no rate limiting (out of scope — the single brownfield scenario was
+scoped to link expiration/TTL instead); orchestration-run state is in-memory/
+single-process (won't scale across instances); SQLite's single-writer model
+means bounded retry mitigates but doesn't eliminate write-lock contention under
+sustained heavy load; expired links are never actively purged (no background
+sweep); a small TOCTOU window exists on custom-alias creation (mitigated at the
+DB-constraint level, not eliminated at the pre-check level); no auth/ownership;
+the reserved-alias list is manually maintained per new route.
 
 **Orchestration engine:** no resume-from-run-id (a blocked run must be fixed and
 restarted fresh); CLI-blocking approval checkpoints work for this prototype's
@@ -161,15 +155,13 @@ approval workflow without a persisted pending-approval state a different
 process could act on.
 
 None of these were discovered after the fact — each was surfaced explicitly in
-the design log at the point it became relevant (most during the ambiguous
-scenario's own disambiguation, where distributed rate limiting was considered
-and deliberately deferred rather than silently ignored).
+the design log at the point it became relevant.
 
 ## 7. Validation
 
 Every scenario was verified at three levels, not just one:
 1. **Automated tests**, written by the orchestrator's own `test_execution` stage
-   and run as a real `pytest` subprocess on every pipeline run (36/36 passing).
+   and run as a real `pytest` subprocess on every pipeline run (33/33 passing).
 2. **Direct inspection of generated state**, not just trusting the code — this is
    how a real bug was caught during the ambiguous scenario (malformed decision
    text from a data-structure mistake) and fixed before being called done.

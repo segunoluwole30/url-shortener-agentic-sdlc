@@ -11,15 +11,12 @@ link that never expires.
 
 Request: `{"long_url": "https://example.com/very/long/path", "custom_alias": null, "ttl_seconds": null}`
 Response (201): `{"alias": "aZ3kq9x", "short_url": "/aZ3kq9x", "long_url": "...", "created": true, "expires_at": null}`
-Rate limited: max RATE_LIMIT_MAX_REQUESTS requests per RATE_LIMIT_WINDOW_SECONDS per
-client IP (default 10/60s). Not applied to GET endpoints.
 
 Errors:
 - 422 if long_url doesn't start with http:// or https://
 - 422 if custom_alias fails format validation or is a reserved word
 - 422 if ttl_seconds is present but not a positive integer
 - 409 if custom_alias is already in use by a different long_url
-- 429 if the caller has exceeded the rate limit (response includes a Retry-After header)
 
 ## GET /{alias}
 Redirect to the original URL. 302 on success, 404 if the alias is unknown,
@@ -34,7 +31,7 @@ Response: `{"alias": "...", "long_url": "...", "created_at": "...", "expires_at"
 
 ## GET /healthz
 Readiness check for monitoring/load-balancer probes. Verifies DB connectivity, not just
-process liveness. Not rate-limited.
+process liveness.
 
 Response (200): `{"status": "ok"}`
 Response (503): DB unreachable.
@@ -47,4 +44,4 @@ failures under concurrent load.
 
 ## Verified
 
-======================== 29 passed, 1 warning in 0.39s ========================= (service/tests/test_api.py)
+======================== 26 passed, 1 warning in 0.38s ========================= (service/tests/test_api.py)

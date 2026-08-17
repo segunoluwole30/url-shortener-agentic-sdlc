@@ -10,10 +10,10 @@ from __future__ import annotations
 import sqlite3
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from . import analytics, db, rate_limit, shortener
+from . import analytics, db, shortener
 from .models import CreateLinkResponse, CreateLinkRequest, LinkStats
 
 
@@ -26,22 +26,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="URL Shortener", version="1.0.0", lifespan=lifespan)
 
 
-def enforce_rate_limit(request: Request) -> None:
-    """Dependency applied only to link creation — see rate_limit.py for why
-    redirects are deliberately excluded."""
-    client_key = request.client.host if request.client else "unknown"
-    try:
-        rate_limit.check(client_key)
-    except rate_limit.RateLimitExceeded as e:
-        raise HTTPException(
-            status_code=429,
-            detail=str(e),
-            headers={"Retry-After": str(int(e.retry_after) + 1)},
-        )
-
-
 @app.post("/api/links", response_model=CreateLinkResponse, status_code=201)
-def create_link(payload: CreateLinkRequest, _: None = Depends(enforce_rate_limit)) -> CreateLinkResponse:
+def create_link(payload: CreateLinkRequest) -> CreateLinkResponse:
     try:
         alias, created, expires_at = shortener.create_link(
             payload.long_url, custom_alias=payload.custom_alias, ttl_seconds=payload.ttl_seconds
@@ -74,8 +60,7 @@ def health_check():
     """Readiness check (design-log.md Section 8, ambiguous scenario — see
     the run's decision log for why this was selected). Verifies DB
     connectivity, not just process liveness: a process that's up but can't
-    reach its only dependency isn't actually healthy for this service. Not
-    rate-limited — monitors need this reachable regardless of creation load.
+    reach its only dependency isn't actually healthy for this service.
     Registered ahead of GET /{alias} and reserved in shortener.py's
     RESERVED_ALIASES so a custom alias can never shadow it."""
     try:

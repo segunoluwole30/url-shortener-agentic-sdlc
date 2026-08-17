@@ -21,10 +21,7 @@ def client():
     tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp_db.close()
     os.environ["SHORTENER_DB_PATH"] = tmp_db.name
-    from service.app import rate_limit
     from service.app.main import app  # imported after env var set
-
-    rate_limit.reset()  # module state is process-global; don't leak between tests
 
     with TestClient(app) as c:
         yield c
@@ -215,61 +212,11 @@ def test_create_link_idempotent_repeat_keeps_original_expiry(client):
     assert r2["expires_at"] == r1["expires_at"]  # not extended by the second request's ttl_seconds
 
 
-# --- rate limiting (design-log.md Section 8, brownfield scenario 2/2) ---
-
-
-def test_create_link_rate_limited_after_max_requests(client, monkeypatch):
-    monkeypatch.setenv("RATE_LIMIT_MAX_REQUESTS", "3")
-    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
-    from service.app import rate_limit
-
-    rate_limit.reset()
-
-    for i in range(3):
-        resp = client.post("/api/links", json={"long_url": f"https://example.com/rl-{i}"})
-        assert resp.status_code == 201
-
-    resp = client.post("/api/links", json={"long_url": "https://example.com/rl-over"})
-    assert resp.status_code == 429
-    assert "Retry-After" in resp.headers
-
-
-def test_create_link_rate_limit_resets_after_window(client, monkeypatch):
-    monkeypatch.setenv("RATE_LIMIT_MAX_REQUESTS", "1")
-    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
-    from service.app import rate_limit
-
-    rate_limit.reset()
-
-    assert client.post("/api/links", json={"long_url": "https://example.com/rl-window-1"}).status_code == 201
-    assert client.post("/api/links", json={"long_url": "https://example.com/rl-window-2"}).status_code == 429
-
-    rate_limit.reset()  # simulates the window elapsing, deterministically, without a real sleep
-
-    assert client.post("/api/links", json={"long_url": "https://example.com/rl-window-3"}).status_code == 201
-
-
-def test_redirect_is_never_rate_limited(client, monkeypatch):
-    monkeypatch.setenv("RATE_LIMIT_MAX_REQUESTS", "1")
-    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
-    from service.app import rate_limit
-
-    rate_limit.reset()
-
-    created = client.post("/api/links", json={"long_url": "https://example.com/rl-redirect"}).json()
-    alias = created["alias"]
-
-    for _ in range(5):
-        resp = client.get(f"/{alias}", follow_redirects=False)
-        assert resp.status_code == 302
-
-
 # --- reliability improvements (design-log.md Section 8, ambiguous scenario) ---
 # The two candidates selected during disambiguation: bounded write-lock retry
 # and a DB-connectivity health check. See the run's decision log
 # (state.json's `decisions`, stage="requirements") for why these two were
-# picked and why structured logging / circuit breakers / distributed rate
-# limiting were deferred.
+# picked and why structured logging / circuit breakers were deferred.
 
 
 def test_execute_with_retry_recovers_from_transient_lock(monkeypatch):
