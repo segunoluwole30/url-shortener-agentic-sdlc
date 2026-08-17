@@ -5,6 +5,7 @@ __pycache__/
 runs/*/
 !runs/.gitkeep
 service/*.db
+.DS_Store
 
 # Schwab Internal — do not push to a personal remote
 Assesment Agentic-Proficient Software Engineer.pdf

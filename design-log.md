@@ -163,6 +163,18 @@ actually ready to ship?) rather than something a predicate can verify.
 (`overall_status = "blocked"`) — no retry, since re-running identical content
 against a human "no" isn't a transient failure. See Section 6.
 
+**State visibility during the pause:** `runner.py` flushes `state.json` right
+before blocking on the prompt, not after — the stage's handler has already run
+by that point (it produces the artifact/decision the human is being asked to
+review), but `approval.request_approval()` itself doesn't save until `input()`
+returns. Without the pre-block flush, a human inspecting `runs/<run_id>/state.json`
+from a second terminal *while the prompt is still pending* would see state
+through the end of the previous stage only — the current stage's own artifact/
+decision would be invisible until after they'd already answered. Caught by
+literally reading `state.json` mid-pause (piping delayed input into a
+backgrounded run) rather than trusting the code, and fixed by moving the save
+to before the block.
+
 ---
 
 ## 6. Retry / Fallback / Rollback Rules

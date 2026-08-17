@@ -50,6 +50,14 @@ def _run_stage(
                 handler(state)
 
             if stage_def.requires_approval:
+                # Flush state.json BEFORE blocking on the prompt, not after — otherwise
+                # a human reviewing the run mid-pause (a second terminal, say) would see
+                # state through the end of the *previous* stage only, since
+                # approval.request_approval() doesn't save until input() returns.
+                # design/release_readiness never run concurrently with sibling stages,
+                # so this save can't race another stage's in-flight handler.
+                with lock:
+                    state.save()
                 request_approval(state, name, summary=f"Review stage {name!r} before proceeding.")
 
             with lock:
