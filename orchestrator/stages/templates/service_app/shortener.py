@@ -11,6 +11,12 @@ do NOT use this retry-and-substitute behavior: a collision there is reported
 as 409 Conflict so the caller can pick a different alias themselves, since
 silently handing back a different alias than the one explicitly requested
 would defeat the point of asking for a specific one.
+
+TTL / expiration (design-log.md Section 8, brownfield scenario): expiration
+is checked lazily at read-time (get_long_url), not via a background sweep —
+simplest reliable approach for a single-process prototype, no scheduler
+needed. Expired rows are never actively purged, just made unreachable
+through this function; see design-log.md Section 9 for that tradeoff.
 """
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ import re
 import secrets
 import sqlite3
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import db
 
@@ -46,6 +52,16 @@ class AliasConflictError(Exception):
     """Raised when a requested custom alias is already taken by a different URL."""
 
 
+class InvalidTTLError(Exception):
+    """Raised when ttl_seconds is present but not a positive integer."""
+
+
+class LinkExpiredError(Exception):
+    """Raised by get_long_url when the alias exists but its TTL has elapsed —
+    distinct from "never existed" so callers can return 410 Gone instead of
+    404 Not Found (design-log.md Section 8)."""
+
+
 def _generate_alias() -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(ALIAS_LENGTH))
 
@@ -66,6 +82,14 @@ def _validate_custom_alias(alias: str) -> None:
         raise InvalidAliasError(f"alias {alias!r} is reserved")
 
 
+def _compute_expires_at(ttl_seconds: int | None) -> str | None:
+    if ttl_seconds is None:
+        return None
+    if not isinstance(ttl_seconds, int) or isinstance(ttl_seconds, bool) or ttl_seconds <= 0:
+        raise InvalidTTLError("ttl_seconds must be a positive integer")
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+
+
 def _find_existing_alias(long_url: str) -> str | None:
     with db.get_conn() as conn:
         row = conn.execute("SELECT alias FROM links WHERE long_url = ?", (long_url,)).fetchone()
@@ -74,20 +98,24 @@ def _find_existing_alias(long_url: str) -> str | None:
 
 def _find_link(alias: str) -> sqlite3.Row | None:
     with db.get_conn() as conn:
-        return conn.execute("SELECT alias, long_url FROM links WHERE alias = ?", (alias,)).fetchone()
+        return conn.execute(
+            "SELECT alias, long_url, expires_at FROM links WHERE alias = ?", (alias,)
+        ).fetchone()
 
 
-def _insert_link(alias: str, long_url: str) -> None:
+def _insert_link(alias: str, long_url: str, expires_at: str | None) -> None:
     with db.get_conn() as conn:
         conn.execute(
-            "INSERT INTO links (alias, long_url, created_at) VALUES (?, ?, ?)",
-            (alias, long_url, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO links (alias, long_url, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (alias, long_url, datetime.now(timezone.utc).isoformat(), expires_at),
         )
         conn.commit()
 
 
-def create_link(long_url: str, custom_alias: str | None = None) -> tuple[str, bool]:
-    """Returns (alias, created).
+def create_link(
+    long_url: str, custom_alias: str | None = None, ttl_seconds: int | None = None
+) -> tuple[str, bool, str | None]:
+    """Returns (alias, created, expires_at).
 
     custom_alias given: explicit intent to claim that specific alias, so the
     long_url-based idempotency lookup below is skipped entirely (design-log.md
@@ -95,36 +123,40 @@ def create_link(long_url: str, custom_alias: str | None = None) -> tuple[str, bo
     gets that alias or a clear 409 conflict, never a silent substitution of
     an unrelated existing alias for the same URL. Idempotency here is scoped
     to the exact (alias, long_url) pair: repeating the same request is a
-    no-op success; requesting the same alias for a *different* URL conflicts.
+    no-op success (the ORIGINAL expires_at is returned, not a new one derived
+    from this call's ttl_seconds — idempotent means "no-op", not "extend").
 
     custom_alias omitted: existing design-log.md Section 1 behavior —
-    idempotent by long_url, then bounded generate-and-retry on collision.
+    idempotent by long_url (same no-extend rule applies), then bounded
+    generate-and-retry on collision.
     """
     _validate_url(long_url)
+    expires_at = _compute_expires_at(ttl_seconds)
 
     if custom_alias is not None:
         _validate_custom_alias(custom_alias)
         existing = _find_link(custom_alias)
         if existing is not None:
             if existing["long_url"] == long_url:
-                return custom_alias, False  # idempotent repeat of the same (alias, url) pair
+                return custom_alias, False, existing["expires_at"]  # idempotent repeat
             raise AliasConflictError(f"alias {custom_alias!r} is already in use")
         try:
-            _insert_link(custom_alias, long_url)
+            _insert_link(custom_alias, long_url, expires_at)
         except sqlite3.IntegrityError:
             # Lost a race against a concurrent request for the same alias.
             raise AliasConflictError(f"alias {custom_alias!r} is already in use")
-        return custom_alias, True
+        return custom_alias, True, expires_at
 
     existing_alias = _find_existing_alias(long_url)
     if existing_alias:
-        return existing_alias, False
+        existing_row = _find_link(existing_alias)
+        return existing_alias, False, existing_row["expires_at"] if existing_row else None
 
     for _ in range(MAX_ALIAS_ATTEMPTS):
         alias = _generate_alias()
         try:
-            _insert_link(alias, long_url)
-            return alias, True
+            _insert_link(alias, long_url, expires_at)
+            return alias, True, expires_at
         except sqlite3.IntegrityError:
             continue  # alias collision — regenerate and retry
 
@@ -132,6 +164,13 @@ def create_link(long_url: str, custom_alias: str | None = None) -> tuple[str, bo
 
 
 def get_long_url(alias: str) -> str | None:
-    with db.get_conn() as conn:
-        row = conn.execute("SELECT long_url FROM links WHERE alias = ?", (alias,)).fetchone()
-        return row["long_url"] if row else None
+    """Returns the long URL, or None if the alias never existed.
+    Raises LinkExpiredError if the alias exists but its TTL has elapsed."""
+    link = _find_link(alias)
+    if link is None:
+        return None
+    if link["expires_at"] is not None:
+        expires_at = datetime.fromisoformat(link["expires_at"])
+        if datetime.now(timezone.utc) >= expires_at:
+            raise LinkExpiredError(f"alias {alias!r} expired at {link['expires_at']}")
+    return link["long_url"]

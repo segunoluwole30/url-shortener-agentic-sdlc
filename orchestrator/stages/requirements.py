@@ -54,6 +54,54 @@ CUSTOM_ALIAS_NORMALIZED = (
     "outcome distinct from the existing generation-retry behavior."
 )
 
+# --- Brownfield scenario (1/2): link expiration/TTL (design-log.md Section 8) ---
+
+TTL_ASSUMPTIONS = [
+    "TTL is opt-in per link via an optional ttl_seconds field on creation; omitting it means the link "
+    "never expires (backward compatible with every link created before this feature existed).",
+    "Expiration is enforced lazily at read-time (on redirect), not via a background sweep job — simplest "
+    "reliable approach for a single-process prototype; expired rows are never actively purged, just made "
+    "unreachable through the redirect path.",
+    "Expired-but-still-present is a distinct outcome from never-existed: the redirect endpoint returns "
+    "410 Gone for an expired alias vs 404 Not Found for an unknown one, since a caller might reasonably "
+    "want to react differently (410 means don't retry, it's gone for good).",
+    "Analytics/stats access is NOT gated by expiration — an owner can still see final click counts for an "
+    "expired link; only the redirect (the thing that actually 'uses' the link) is blocked.",
+    "Idempotent repeat requests do not extend or change an existing link's expiry — idempotent means "
+    "no-op, not 'refresh the TTL'.",
+    "Existing DBs created before this feature (no expires_at column) are migrated in place via "
+    "ALTER TABLE on startup, not required to be recreated from scratch — this is genuinely brownfield: "
+    "an existing data flow being extended, not a fresh table.",
+]
+
+TTL_NORMALIZED = (
+    "Extend link creation (POST /api/links) to accept an optional ttl_seconds, after which the redirect "
+    "endpoint treats the alias as gone (410) while preserving the record and its analytics for read access. "
+    "Requires a schema migration for links created under the pre-TTL schema."
+)
+
+# --- Brownfield scenario (2/2): rate limiting (design-log.md Section 8) ---
+
+RATE_LIMIT_ASSUMPTIONS = [
+    "Scoped to POST /api/links only — link creation is the resource-consuming, abuse-prone operation; "
+    "GET /{alias} redirects are deliberately NOT rate-limited, since a public redirect service needs "
+    "reads to stay fast and always-available.",
+    "Fixed-window counter keyed by client IP (request.client.host), default 10 requests / 60 seconds, "
+    "configurable via RATE_LIMIT_MAX_REQUESTS / RATE_LIMIT_WINDOW_SECONDS — same env-var override "
+    "pattern already used for SHORTENER_DB_PATH.",
+    "In-memory, single-process state: does not survive a restart and is NOT shared across multiple app "
+    "instances behind a load balancer — acceptable for this prototype, called out explicitly as a "
+    "limitation (design-log.md Section 9) rather than silently assumed away.",
+    "Exceeding the limit returns 429 with a Retry-After header stating when the window resets, so a "
+    "well-behaved client can back off correctly instead of guessing.",
+]
+
+RATE_LIMIT_NORMALIZED = (
+    "Add a request-rate ceiling to link creation (POST /api/links) to protect the service from "
+    "spam/abuse, returning 429 with Retry-After once a client exceeds the configured limit within the "
+    "current time window. Read paths (redirect, stats) are explicitly out of scope for rate limiting."
+)
+
 
 def handler(state: RunState) -> None:
     raw = state.requirement.raw.strip()
@@ -63,6 +111,14 @@ def handler(state: RunState) -> None:
         state.requirement.normalized = CUSTOM_ALIAS_NORMALIZED
         state.requirement.assumptions = list(CUSTOM_ALIAS_ASSUMPTIONS)
         rationale = "greenfield scenario: custom aliases (design-log.md Section 8)"
+    elif "ttl" in raw_lower or "expir" in raw_lower:
+        state.requirement.normalized = TTL_NORMALIZED
+        state.requirement.assumptions = list(TTL_ASSUMPTIONS)
+        rationale = "brownfield scenario (1/2): link expiration/TTL (design-log.md Section 8)"
+    elif "rate limit" in raw_lower:
+        state.requirement.normalized = RATE_LIMIT_NORMALIZED
+        state.requirement.assumptions = list(RATE_LIMIT_ASSUMPTIONS)
+        rationale = "brownfield scenario (2/2): rate limiting (design-log.md Section 8)"
     elif not raw or "url shortener" in raw_lower or "core apis" in raw_lower:
         state.requirement.normalized = BASELINE_NORMALIZED
         state.requirement.assumptions = list(BASELINE_ASSUMPTIONS)

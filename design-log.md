@@ -254,7 +254,90 @@ completed with `overall_status: complete`.
 redirect through the custom alias, all confirmed against a running server (not
 just `TestClient`).
 
-### Brownfield —
+### Brownfield (1/2) — link expiration / TTL
+
+**Requirement (raw):** "Add link expiration (TTL) so short links can automatically expire."
+
+**Codebase reasoning (shown to the user before writing code):** identified as touching
+`service/app/db.py` (schema — new `expires_at` column, requiring an explicit
+`ALTER TABLE` migration path since existing DB files predate the column and
+`CREATE TABLE IF NOT EXISTS` alone won't add it), `models.py` (new optional
+`ttl_seconds`/`expires_at` fields), `shortener.py` (`create_link` gains an
+`expires_at` computation + idempotency-doesn't-extend rule; `get_long_url` needs
+to distinguish "expired" from "never existed"), and `main.py` (redirect handler
+needs a new response code). This is the actual brownfield characteristic: an
+**existing data flow being extended**, not a fresh table — the migration path is
+the part a greenfield feature wouldn't need.
+
+**Key design decisions:**
+- Redirect returns **410 Gone** for an expired alias, **404** for a never-existed
+  one — distinct outcomes, since a caller might reasonably retry a 404 (typo) but
+  should not retry a 410 (gone for good). The pre-existing 404 error message
+  ("unknown or expired alias") had been anticipating exactly this split.
+- Expiration enforced **lazily at read-time**, no background sweep — no scheduler
+  needed for a single-process prototype; expired rows stay in the DB, just made
+  unreachable via redirect.
+- **Analytics stay readable after expiry** — expiry blocks the redirect (the
+  thing that "uses" the link), not the stats endpoint (a read of history).
+- **Idempotent repeats never extend expiry** — idempotent means no-op, not
+  "refresh the TTL," consistent with how idempotency already worked for custom
+  aliases.
+
+**Orchestration:** ran via `python cli.py run --requirement "..."`
+(`runs/run-20260817T102853-1395b5/`) — `requirements` matched the new TTL-scenario
+branch, both approvals hit and approved, `test_execution` ran 21 real pytest cases
+(14 prior + 7 new) and passed, `overall_status: complete`.
+
+**Validation:**
+- Schema migration tested directly: built a pre-TTL DB file by hand (no
+  `expires_at` column, one legacy row), ran `init_db()` against it, confirmed the
+  column was added via `ALTER TABLE` and the legacy row survived with
+  `expires_at = None` (never expires — the correct default for pre-existing data).
+- Live `uvicorn` smoke test with a **real 1-second TTL and real elapsed wall-clock
+  time** (not just a backdated DB row): 302 while valid → 410 once the TTL
+  genuinely elapsed → stats still 200 afterward.
+
+### Brownfield (2/2) — rate limiting
+
+**Requirement (raw):** "Add rate limiting to protect the service from abuse."
+
+**Codebase reasoning (shown to the user before writing code):** new module
+`service/app/rate_limit.py` (self-contained, not entangled with `db.py`/`shortener.py`
+since this is a cross-cutting HTTP concern, not a domain rule about links), wired into
+`main.py` as a FastAPI dependency on `POST /api/links` only. `requirements.py`/
+`design.py`/`test_planning.py`/`docs_drafting.py` extended with the new scenario
+branch, same pattern as TTL/custom-aliases.
+
+**Key design decisions:**
+- **Scoped to link creation only** — `POST /api/links` is the resource-consuming,
+  abuse-prone operation; `GET /{alias}` redirects are deliberately NOT rate-limited,
+  since a public redirect service needs reads to stay fast and always-available.
+  Verified live: 5 rapid GETs after the creation limit was already exhausted all
+  still returned normally (404 for the nonexistent test aliases used), never 429.
+- **Fixed-window counter keyed by client IP**, in-memory, thread-safe (lock-guarded,
+  same idiom as `orchestrator/runner.py`'s state mutation), configurable via
+  `RATE_LIMIT_MAX_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS` — same env-var override
+  pattern as `SHORTENER_DB_PATH`.
+- **429 with `Retry-After`** on exceeded, so a well-behaved client can back off
+  correctly rather than guess.
+- **In-memory is a real limitation, not an oversight**: doesn't survive a restart,
+  not shared across multiple app instances behind a load balancer. Documented in
+  Section 9 rather than hidden.
+
+**Orchestration:** ran via `python cli.py run --requirement "..."`
+(`runs/run-20260817T163019-0e16a2/`) — `requirements` matched the new rate-limiting
+branch, both approvals hit and approved, `test_execution` ran 24 real pytest cases
+(21 prior + 3 new) and passed, `overall_status: complete`.
+
+**Validation:**
+- Test isolation problem caught and fixed during implementation: the rate limiter's
+  state is process-global (a module-level dict), so without an explicit
+  `rate_limit.reset()` in the test `client` fixture, earlier tests' POSTs would have
+  silently counted against later tests' limits — a real cross-test contamination bug,
+  not hypothetical, since the full suite makes 20+ creation calls across the file.
+- Live `uvicorn` smoke test with `RATE_LIMIT_MAX_REQUESTS=3`: 3 creates succeed, 4th
+  returns 429 with `Retry-After: 60`; 5 rapid redirect requests in the same window
+  are never rate-limited.
 ### Ambiguous —
 
 ---

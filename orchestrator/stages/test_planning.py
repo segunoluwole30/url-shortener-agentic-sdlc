@@ -32,6 +32,16 @@ Derived from design-log.md Section 1 assumptions + service/docs/DESIGN.md.
 | 12 | POST /api/links with custom_alias == a reserved word (e.g. "api") | 422 |
 | 13 | POST /api/links with custom_alias for a URL that already has a different alias | new alias used, NOT the old one |
 | 14 | GET /{custom_alias} for a link created via custom_alias | 302 redirect to the original long_url |
+| 15 | POST /api/links with a valid ttl_seconds | 201, expires_at set (~now + ttl) |
+| 16 | POST /api/links with no ttl_seconds | expires_at is null (never expires) |
+| 17 | GET /{alias} before expiry | 302, as normal |
+| 18 | GET /{alias} after expiry | 410 (distinct from 404 for a never-existed alias) |
+| 19 | GET /api/links/{alias}/stats after expiry | still 200 — analytics remain readable after expiry |
+| 20 | POST /api/links with ttl_seconds <= 0 | 422 |
+| 21 | POST /api/links twice (idempotent repeat) with a different ttl_seconds the second time | original expires_at is kept, not extended |
+| 22 | POST /api/links repeated beyond RATE_LIMIT_MAX_REQUESTS within the window | 429, with a Retry-After header |
+| 23 | POST /api/links after the rate-limit window has elapsed | 201 again — limit resets |
+| 24 | GET /{alias} repeated many times | never 429 — redirects are not rate-limited |
 
 Implemented as `service/tests/test_api.py` by the test_execution stage, run against
 a temporary SQLite DB (via SHORTENER_DB_PATH override) so pipeline runs never

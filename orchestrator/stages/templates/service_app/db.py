@@ -26,6 +26,16 @@ def get_conn():
         conn.close()
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """Brownfield migration: an existing DB file created before TTL support
+    (design-log.md Section 8) already has a `links` table without
+    `expires_at`. CREATE TABLE IF NOT EXISTS alone would leave that column
+    missing forever, so check for it explicitly and ALTER TABLE if absent."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_db() -> None:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,4 +54,5 @@ def init_db() -> None:
             "referrer TEXT, "
             "FOREIGN KEY (alias) REFERENCES links(alias))"
         )
+        _add_column_if_missing(conn, "links", "expires_at", "TEXT")  # NULL = never expires
         conn.commit()

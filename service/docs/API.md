@@ -6,26 +6,34 @@
 ## POST /api/links
 Create a short link. `custom_alias` is optional — omit it for a system-generated
 7-char alias, or supply one to claim a specific alias (3-32 chars, letters/digits/
-hyphen/underscore, not a reserved word).
+hyphen/underscore, not a reserved word). `ttl_seconds` is optional — omit it for a
+link that never expires.
 
-Request: `{"long_url": "https://example.com/very/long/path", "custom_alias": null}`
-Response (201): `{"alias": "aZ3kq9x", "short_url": "/aZ3kq9x", "long_url": "...", "created": true}`
+Request: `{"long_url": "https://example.com/very/long/path", "custom_alias": null, "ttl_seconds": null}`
+Response (201): `{"alias": "aZ3kq9x", "short_url": "/aZ3kq9x", "long_url": "...", "created": true, "expires_at": null}`
+Rate limited: max RATE_LIMIT_MAX_REQUESTS requests per RATE_LIMIT_WINDOW_SECONDS per
+client IP (default 10/60s). Not applied to GET endpoints.
+
 Errors:
 - 422 if long_url doesn't start with http:// or https://
 - 422 if custom_alias fails format validation or is a reserved word
+- 422 if ttl_seconds is present but not a positive integer
 - 409 if custom_alias is already in use by a different long_url
+- 429 if the caller has exceeded the rate limit (response includes a Retry-After header)
 
 ## GET /{alias}
-Redirect to the original URL. 302 on success, 404 if the alias is unknown.
+Redirect to the original URL. 302 on success, 404 if the alias is unknown,
+410 if the alias existed but its TTL has elapsed.
 
 ## GET /api/links/{alias}/stats
-Return click analytics for a link. 404 if the alias is unknown.
+Return click analytics for a link. 404 if the alias is unknown. Still returns
+200 for an expired alias — expiry only blocks the redirect, not analytics access.
 
-Response: `{"alias": "...", "long_url": "...", "created_at": "...", "click_count": N,
+Response: `{"alias": "...", "long_url": "...", "created_at": "...", "expires_at": null, "click_count": N,
 "clicks": [{"timestamp": "...", "referrer": "..."}]}`
 
 ---
 
 ## Verified
 
-======================== 14 passed, 1 warning in 0.30s ========================= (service/tests/test_api.py)
+======================== 24 passed, 1 warning in 0.46s ========================= (service/tests/test_api.py)
