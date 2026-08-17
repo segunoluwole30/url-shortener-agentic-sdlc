@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .state import RunState, StageState
+
 
 @dataclass(frozen=True)
 class StageDef:
@@ -35,6 +37,53 @@ GRAPH: tuple[StageDef, ...] = (
 )
 
 GRAPH_BY_NAME: dict[str, StageDef] = {s.name: s for s in GRAPH}
+
+
+def plan_for(state: RunState) -> tuple[StageDef, ...]:
+    """Decide the stage graph for this run from requirements' output —
+    design-log.md Section 2 addendum, "dynamic re-planning" (Core
+    Requirement 4). Called once, right after the `requirements` stage
+    completes and before the rest of the graph is scheduled — this is a
+    genuine plan change driven by upstream output (different requirement
+    text produces a structurally different graph), not a cosmetic branch.
+
+    Returns GRAPH unchanged for every requirement except ones that signal a
+    schema migration needs verifying (state.requirement.requires_migration_review),
+    in which case `migration_review` is spliced in after `implementation`
+    and `test_execution` is rewired to wait on it too — so the pipeline
+    verifies the real generated migration path before tests run against it,
+    instead of that being a manual, out-of-band check.
+    """
+    if not state.requirement.requires_migration_review:
+        return GRAPH
+
+    migration_review = StageDef("migration_review", depends_on=("implementation",))
+    new_test_execution = StageDef("test_execution", depends_on=("implementation", "migration_review"))
+
+    augmented = tuple(new_test_execution if s.name == "test_execution" else s for s in GRAPH) + (
+        migration_review,
+    )
+    validate_graph(augmented)
+
+    # GRAPH's default stage/retry_count bookkeeping (state.py's STAGE_NAMES)
+    # doesn't know about migration_review — give it a live slot before the
+    # scheduler ever looks it up.
+    if "migration_review" not in state.stages:
+        state.stages["migration_review"] = StageState()
+        state.retry_counts["migration_review"] = 0
+
+    # Governance requirement, not optional: the re-plan itself must be
+    # audit-trail-visible, not a silent branch.
+    state.add_decision(
+        stage="requirements",
+        decision="graph re-planned: inserted migration_review stage",
+        rationale="requirement.requires_migration_review is set — the schema migration this "
+        "requirement needs (design-log.md Section 8, TTL brownfield scenario) gets verified "
+        "against the real generated db.py as a governed pipeline stage, not a manual check.",
+        actor="agent",
+    )
+
+    return augmented
 
 
 def dependents_of(stage_name: str, graph: tuple[StageDef, ...] = GRAPH) -> list[str]:

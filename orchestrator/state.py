@@ -32,6 +32,11 @@ class Requirement:
     raw: str = ""
     normalized: str = ""
     assumptions: list[str] = field(default_factory=list)
+    # Typed control signal (not string-sniffed from `assumptions`) that
+    # orchestrator/graph.py's plan_for() reads to decide whether to
+    # conditionally insert the migration_review stage — design-log.md
+    # Section 2 addendum, "dynamic re-planning".
+    requires_migration_review: bool = False
 
 
 @dataclass
@@ -140,6 +145,7 @@ class RunState:
             raw=req.get("raw", ""),
             normalized=req.get("normalized", ""),
             assumptions=req.get("assumptions", []),
+            requires_migration_review=req.get("requires_migration_review", False),
         )
         state.decisions = [Decision(**d) for d in raw.get("decisions", [])]
         state.artifacts = raw.get("artifacts", {})

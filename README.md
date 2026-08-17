@@ -112,7 +112,7 @@ curl localhost:8000/healthz
 ```
 orchestrator/            # the orchestration engine — the graded differentiator
   state.py                 # Section 3 state schema (dataclasses + JSON persistence)
-  graph.py                 # Section 2 stage graph, as data
+  graph.py                 # Section 2 stage graph, as data; plan_for() dynamically re-plans it
   gates.py                 # Section 4 entry/exit gate predicates
   retry.py                 # Section 6 retry/fallback/rollback policy
   approval.py               # Section 5 blocking human-approval checkpoint
@@ -123,6 +123,7 @@ orchestrator/            # the orchestration engine — the graded differentiato
     requirements.py           # requirement normalization, incl. ambiguous-scenario disambiguation
     design.py, test_planning.py, docs_drafting.py, docs_finalize.py, release_readiness.py
     implementation.py         # copies+compiles service_app/ templates into service/app/
+    migration_review.py       # conditionally inserted by plan_for(); verifies real db.py migration
     test_execution.py         # copies service_tests/ template, actually runs pytest
     templates/                # the actual service source, applied by the stages above
       service_app/              # FastAPI app: db, shortener, analytics, models, main
@@ -133,6 +134,7 @@ service/                  # built BY the orchestrator, not hand-written
   docs/                     # DESIGN.md + API.md (written by the pipeline)
 runs/<run_id>/            # one directory per orchestration run: state.json + audit.log
 tests/test_orchestrator.py  # unit tests for the orchestration engine itself
+tests/test_replanning.py    # unit tests for plan_for()'s dynamic re-planning
 cli.py                    # entrypoint: python cli.py run --requirement "..."
 design-log.md             # locked stage graph/schema/gates + full scenario decision log
 FINAL_SUMMARY.md          # plan/rationale/artifacts/risks/assumptions/limitations

@@ -67,6 +67,12 @@ def _docs_drafting_exit(state: RunState) -> bool:
     return bool(state.artifacts.get("docs_drafting"))
 
 
+def _migration_review_exit(state: RunState) -> bool:
+    """Conditionally-present stage (orchestrator/graph.py's plan_for()) — same
+    artifact-presence style as implementation/test_planning/docs_drafting."""
+    return bool(state.artifacts.get("migration_review"))
+
+
 def _test_execution_exit(state: RunState) -> bool:
     """No unresolved test failures — checked as "the most recent test_execution
     history event is a pass", not "no failure ever happened", since history is
@@ -93,6 +99,7 @@ _EXIT_GATES = {
     "implementation": _implementation_exit,
     "test_planning": _test_planning_exit,
     "docs_drafting": _docs_drafting_exit,
+    "migration_review": _migration_review_exit,
     "test_execution": _test_execution_exit,
     "docs_finalize": _docs_finalize_exit,
     "release_readiness": _release_readiness_exit,

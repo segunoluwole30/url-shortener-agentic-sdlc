@@ -161,6 +161,7 @@ def handler(state: RunState) -> None:
     elif "ttl" in raw_lower or "expir" in raw_lower:
         state.requirement.normalized = TTL_NORMALIZED
         state.requirement.assumptions = list(TTL_ASSUMPTIONS)
+        state.requirement.requires_migration_review = True
         rationale = "brownfield scenario: link expiration/TTL (design-log.md Section 8)"
     elif "more reliable" in raw_lower or "reliability" in raw_lower:
         state.requirement.normalized = RELIABILITY_NORMALIZED

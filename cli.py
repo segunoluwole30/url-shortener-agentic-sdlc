@@ -5,6 +5,12 @@ URL shortener into service/ — requirements -> design -> {implementation,
 test_planning, docs_drafting} -> test_execution -> docs_finalize ->
 release_readiness. orchestrator/demo_stages.py (Step 2's no-op stubs) is no
 longer used by this entrypoint but is left in place for reference.
+
+Runs `requirements` on its own first, then decides the rest of the graph via
+orchestrator/graph.py's plan_for() — design-log.md Section 2 addendum
+("dynamic re-planning", Core Requirement 4): some requirements (currently,
+ones needing a schema migration) get an extra migration_review stage spliced
+in, decided from requirements' own output, not a fixed graph every run.
 """
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ import argparse
 import json
 import sys
 
+from orchestrator.graph import GRAPH_BY_NAME, plan_for
 from orchestrator.retry import RunHalted
 from orchestrator.runner import run
 from orchestrator.stages import HANDLERS
@@ -31,7 +38,9 @@ def main() -> int:
         state = RunState.new(raw_requirement=args.requirement)
         print(f"Starting run {state.run_id}")
         try:
-            run(state, handlers=HANDLERS)
+            run(state, handlers=HANDLERS, graph=(GRAPH_BY_NAME["requirements"],), finalize=False)
+            graph = plan_for(state)
+            run(state, handlers=HANDLERS, graph=graph)
         except RunHalted as e:
             print(f"\nRun halted: {e}")
             print(f"State: {state.path()}")

@@ -112,7 +112,13 @@ def run(
     policies: dict[str, RetryPolicy] | None = None,
     graph=GRAPH,
     max_workers: int = 8,
+    finalize: bool = True,
 ) -> RunState:
+    """finalize=False skips the trailing overall_status write — for callers
+    that run a subgraph and intend to call run() again over the rest of the
+    graph before the run is actually done (cli.py's requirements-then-
+    plan_for()-then-rest split, design-log.md Section 2 addendum). Default
+    True keeps every existing caller's behavior unchanged."""
     handlers = handlers or {}
     fallback_handlers = fallback_handlers or {}
     policies = policies or {}
@@ -163,12 +169,13 @@ def run(
                     state.save()
                 raise halted
 
-    with lock:
-        # Only the stages that were actually part of this run's graph matter —
-        # state.stages carries all 8 real stage slots regardless of which
-        # (sub)graph was executed, e.g. in synthetic-graph tests.
-        all_complete = all(state.stages[s.name].status == "complete" for s in graph)
-        state.overall_status = "complete" if all_complete else "failed"
-        state.save()
+    if finalize:
+        with lock:
+            # Only the stages that were actually part of this run's graph matter —
+            # state.stages carries all 8 real stage slots regardless of which
+            # (sub)graph was executed, e.g. in synthetic-graph tests.
+            all_complete = all(state.stages[s.name].status == "complete" for s in graph)
+            state.overall_status = "complete" if all_complete else "failed"
+            state.save()
 
     return state

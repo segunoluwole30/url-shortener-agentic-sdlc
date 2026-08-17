@@ -51,7 +51,7 @@ Work was staged in six explicit steps, each reviewed before the next began:
 
 ## 2. Architecture
 
-**Orchestration engine** (`orchestrator/`): a locked 8-node dependency graph
+**Orchestration engine** (`orchestrator/`): a default 8-node dependency graph
 (`requirements → design → {implementation, test_planning, docs_drafting} →
 test_execution → docs_finalize → release_readiness`) walked by a thread-pool
 scheduler that submits a stage the instant its entry gate (all dependencies
@@ -82,6 +82,24 @@ that same history on every write — never hand-set by a stage handler.
 stage handlers via templates in `orchestrator/stages/templates/`. Three core
 endpoints (create/redirect/stats) plus, by the end of the scenarios, optional
 custom aliases, optional TTL expiration, and a `/healthz` readiness check.
+
+**Dynamic re-planning:** the 8-node graph above is the default, not the only
+plan. `orchestrator/graph.py`'s `plan_for(state)` runs once, right after
+`requirements` completes, and can return a structurally different graph based
+on what `requirements` produced — currently, requirements that signal a
+schema migration (the TTL scenario) get a `migration_review` stage spliced
+in after `implementation`, with `test_execution` rewired to wait on it too.
+This is a real plan change driven by upstream output, not decoration: it
+formalizes a schema-migration check that was originally done by hand,
+out-of-band, into a governed pipeline stage that runs on every real
+pipeline execution of that scenario — verified live, both directions
+(baseline requirement → 8-stage graph; TTL requirement → 9-stage graph with
+`migration_review` completing between `implementation` and `test_execution`,
+confirmed via `state.json` timestamps). Every re-plan is logged as its own
+`agent`-actor decision, so it's audit-trail-visible, not a silent branch.
+Stated honestly: this decides the plan once, post-`requirements`, not through
+true mid-execution graph mutation while later stages are already running —
+design-log.md Section 2's addendum has the full scoping rationale.
 
 ## 3. Artifacts
 

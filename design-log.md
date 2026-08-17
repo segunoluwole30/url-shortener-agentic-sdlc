@@ -64,6 +64,44 @@ design  ── (exit gate: design approved)
 
 **Rationale for this shape:** implementation, test-planning, and docs-drafting can genuinely proceed independently once design is approved — none of them need each other's *output*, only the approved design. This is the real parallelism, not simulated. Test-execution is the one hard dependency on implementation's actual output (code to run), which is what makes it a true synchronization point rather than an arbitrary one.
 
+**Addendum — dynamic re-planning (Core Requirement 4):** the graph above is
+the *default* plan, not the only possible one. `orchestrator/graph.py`'s
+`plan_for(state)` is called once, right after `requirements` completes and
+before the rest of the graph is scheduled — if `requirement
+.requires_migration_review` was set (currently: the TTL brownfield scenario,
+whose normalized requirement states a schema migration is needed), it
+returns a 9-node graph instead: `migration_review` is spliced in after
+`implementation`, and `test_execution` is rewired to depend on
+`(implementation, migration_review)` instead of just `(implementation,)`.
+This is a genuine plan change driven by upstream (`requirements`) output —
+different requirement text produces a structurally different graph, not just
+different content flowing through the same fixed shape. It's governed, not a
+silent branch: `plan_for()` logs a `"graph re-planned: ..."` decision
+(`actor: "agent"`) whenever it augments, so the re-plan itself is visible in
+`state.json`'s `decisions`, same as everything else in this system.
+
+`migration_review`'s handler (`orchestrator/stages/migration_review.py`)
+formalizes a check that was previously done manually, out-of-band, earlier in
+this project: it builds a synthetic pre-TTL database, points the *real,
+just-generated* `service/app/db.py` at it via `SHORTENER_DB_PATH`, and
+asserts the migration adds `expires_at` and preserves existing rows —
+verified against the actual generated code, not a mock.
+
+**Scope, stated honestly:** this decides the plan once, immediately after
+`requirements`, not through true mid-execution graph mutation while later
+stages are already running. `cli.py` runs `requirements` alone first
+(`run(..., graph=(GRAPH_BY_NAME["requirements"],), finalize=False)`), calls
+`plan_for()`, then runs the rest (`run(..., graph=plan_for(state))`) — the
+generic scheduler in `runner.py` is otherwise completely untouched (one
+additive `finalize` parameter, guarding only the trailing
+`overall_status` write so the first call doesn't prematurely mark a 1-of-9
+run "complete"). A more literal reading of "dynamically re-plan" — splicing
+a new stage in *while the graph is already executing*, which would require
+making the scheduler's `graph` mutable mid-loop and generalizing
+`gates.py`'s currently-hardcoded exit-gate dispatch — was scoped and
+deliberately not built, given the risk of destabilizing the most heavily
+tested part of this system for a narrower marginal gain.
+
 ---
 
 ## 3. Shared State / Context Schema (locked)
@@ -86,7 +124,7 @@ running concurrently. `stages` is now a per-node status map instead.
     "docs_finalize":       { "status": "", "started_at": "", "completed_at": "" },
     "release_readiness":   { "status": "", "started_at": "", "completed_at": "" }
   },
-  "requirement": { "raw": "", "normalized": "", "assumptions": [] },
+  "requirement": { "raw": "", "normalized": "", "assumptions": [], "requires_migration_review": false },
   "decisions": [
     { "stage": "", "decision": "", "rationale": "", "timestamp": "", "actor": "agent | human" }
   ],
@@ -111,6 +149,8 @@ running concurrently. `stages` is now a per-node status map instead.
 **Notes:**
 - `actor` on each decision distinguishes agent-made vs. human-made calls — supports the "controlled autonomy" grading criterion directly.
 - `metrics` kept live in state rather than recomputed from `history` each time, since Section 7 needs exactly these five numbers reportable at any point in a run.
+- `requirement.requires_migration_review` (added for dynamic re-planning, Section 2 addendum): a typed control signal `requirements.py` sets, not string-sniffed from `assumptions` — the audit trail (`decisions`/`assumptions`) stays human-readable narrative, this field stays a clean machine-checkable flag `orchestrator/graph.py`'s `plan_for()` reads to decide the graph shape.
+- `stages`/`retry_counts` are shown above with the 8 baseline keys, but aren't fixed-size in practice: `plan_for()` adds a `migration_review` entry to both when it augments the graph. Any future conditionally-inserted stage would do the same.
 
 ---
 
@@ -332,6 +372,21 @@ branch, both approvals hit and approved, `test_execution` ran 21 real pytest cas
 - Live `uvicorn` smoke test with a **real 1-second TTL and real elapsed wall-clock
   time** (not just a backdated DB row): 302 while valid → 410 once the TTL
   genuinely elapsed → stats still 200 afterward.
+
+**Addendum — this manual migration check is now a governed pipeline stage.**
+The schema-migration verification above was originally a one-off, out-of-band
+check done by hand. It's since been formalized into `migration_review`, a
+stage `orchestrator/graph.py`'s `plan_for()` conditionally inserts into the
+graph whenever `requirement.requires_migration_review` is set (true for this
+scenario) — see Section 2's "dynamic re-planning" addendum for the mechanism,
+and `orchestrator/stages/migration_review.py` for the handler, which performs
+the same check (synthetic pre-TTL DB, real generated `db.py`, column-added +
+row-survived assertions) but now runs on every real pipeline run of this
+scenario, not just once by hand. Verified live: re-running this exact
+requirement produces a 9-stage graph with `migration_review` completing
+between `implementation` and `test_execution` (confirmed via `state.json`
+timestamps), writing `service/docs/MIGRATION_REVIEW.md`, and logging both the
+re-plan decision and the verification result to `state.json`'s `decisions`.
 
 ### Ambiguous — "make it more reliable"
 
