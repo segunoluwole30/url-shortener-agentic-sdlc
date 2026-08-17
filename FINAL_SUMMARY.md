@@ -60,7 +60,8 @@ execution, verified in `tests/test_orchestrator.py` by measured wall-clock
 overlap, not asserted ordering. Every stage's exit gate is a real, checkable
 predicate over state (design-log.md Section 4) — not a formality: `implementation`
 only passes if its artifacts `py_compile` cleanly; `test_execution` only passes if
-the *most recent* history event for that stage is `tests_passed`, correctly
+the *most recent* entry in that stage's logged history (state.json's `history`
+list) is `tests_passed`, correctly
 handling the retry-then-succeed case rather than a naive "no failure ever
 happened" check that the append-only history would otherwise make impossible.
 
@@ -69,13 +70,13 @@ deliberately not more; every other stage is governed mechanically by its exit
 gate, since gating every stage on a human would make "controlled autonomy" into
 "no autonomy" (design-log.md Section 5). Bounded retry (default 2 extra attempts)
 → one fallback attempt → stage-scoped rollback → run-level safe-stop
-(`overall_status = "blocked"`) on exhaustion (Section 6), verified by dedicated
-unit tests including one that proves rollback reverts only the failing stage's
-own state, not sibling stages that already completed in parallel. Every
-transition is logged to both `state.json`'s `history` and a separate append-only
-`audit.log`, and the five Section 7 metrics (success rate, retry/rollback
-frequency, MTTR, end-to-end latency) are recomputed from that same history on
-every write — never hand-set by a stage handler.
+(`overall_status = "blocked"`) on exhaustion (design-log.md Section 6), verified
+by dedicated unit tests including one that proves rollback reverts only the
+failing stage's own state, not sibling stages that already completed in parallel.
+Every transition is logged to both `state.json`'s `history` and a separate
+append-only `audit.log`, and design-log.md Section 7's five metrics (success
+rate, retry/rollback frequency, MTTR, end-to-end latency) are recomputed from
+that same history on every write — never hand-set by a stage handler.
 
 **Service** (`service/`): FastAPI + SQLite, built entirely by the orchestrator's
 stage handlers via templates in `orchestrator/stages/templates/`. Three core
