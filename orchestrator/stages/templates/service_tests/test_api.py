@@ -8,6 +8,7 @@ against). Cases follow service/tests/TEST_PLAN.md.
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 
@@ -261,3 +262,64 @@ def test_redirect_is_never_rate_limited(client, monkeypatch):
     for _ in range(5):
         resp = client.get(f"/{alias}", follow_redirects=False)
         assert resp.status_code == 302
+
+
+# --- reliability improvements (design-log.md Section 8, ambiguous scenario) ---
+# The two candidates selected during disambiguation: bounded write-lock retry
+# and a DB-connectivity health check. See the run's decision log
+# (state.json's `decisions`, stage="requirements") for why these two were
+# picked and why structured logging / circuit breakers / distributed rate
+# limiting were deferred.
+
+
+def test_execute_with_retry_recovers_from_transient_lock(monkeypatch):
+    from service.app import db
+
+    monkeypatch.setattr(db, "WRITE_RETRY_BASE_DELAY", 0.001)  # keep the test fast
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert db.execute_with_retry(flaky) == "ok"
+    assert calls["n"] == 3
+
+
+def test_execute_with_retry_raises_after_max_attempts(monkeypatch):
+    from service.app import db
+
+    monkeypatch.setattr(db, "WRITE_RETRY_BASE_DELAY", 0.001)
+
+    def always_locked():
+        raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.execute_with_retry(always_locked)
+
+
+def test_execute_with_retry_does_not_retry_non_lock_errors():
+    from service.app import db
+
+    calls = {"n": 0}
+
+    def other_error():
+        calls["n"] += 1
+        raise sqlite3.OperationalError("no such table: foo")
+
+    with pytest.raises(sqlite3.OperationalError):
+        db.execute_with_retry(other_error)
+    assert calls["n"] == 1  # not retried
+
+
+def test_healthz_returns_ok(client):
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_create_link_reserved_word_healthz_rejected(client):
+    resp = client.post("/api/links", json={"long_url": "https://example.com/hz", "custom_alias": "healthz"})
+    assert resp.status_code == 422

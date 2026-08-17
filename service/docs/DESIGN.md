@@ -21,6 +21,7 @@ Derived from design-log.md Sections 1-2 (normalized requirement + stage graph).
 | POST | /api/links | Create a short link. Accepts optional `custom_alias` and `ttl_seconds`. 201 with `{alias, short_url, long_url, created, expires_at}`. 422 on invalid URL/alias/ttl, 409 on custom-alias conflict, 429 on rate limit exceeded (with `Retry-After`). |
 | GET | /{alias} | Redirect (302) to the original URL; records a click. 404 on unknown alias, 410 on expired alias. Not rate-limited. |
 | GET | /api/links/{alias}/stats | Click count, timestamps, referrers, expires_at for a link. 404 on unknown alias (still readable after expiry). Not rate-limited. |
+| GET | /healthz | Readiness check: verifies DB connectivity. 200 `{"status": "ok"}`, 503 if DB unreachable. Not rate-limited. |
 
 ## Reliability characteristics (design-log.md Section 1, ambiguity #5)
 
@@ -68,7 +69,22 @@ Derived from design-log.md Sections 1-2 (normalized requirement + stage graph).
   app instances — a real limitation for a production deployment, noted in Section 9
   rather than hidden.
 
+## Reliability improvements (design-log.md Section 8, ambiguous scenario)
+
+The raw requirement ("make it more reliable") named no concrete feature — disambiguated
+via explicit candidate analysis recorded in the run's decision log (state.json), not just
+here. Two candidates were selected, three deferred with reasons; see decisions for detail.
+
+- **Write-lock retry**: `db.execute_with_retry()` wraps the two hot write paths (link
+  creation, click recording) with bounded retry (3 attempts) + exponential backoff on
+  SQLite's "database is locked" — a real risk under concurrent load with SQLite's
+  single-writer model, previously unhandled anywhere in the codebase. Non-lock
+  `OperationalError`s are NOT retried (retrying a genuine bug just delays the failure).
+- **GET /healthz**: verifies DB connectivity (not just process liveness), not rate-limited,
+  reserved in `RESERVED_ALIASES` so a custom alias can never shadow it.
+
 ## Out of scope for v1 (design-log.md Section 1)
 
-Auth/ownership — not yet addressed. (Custom aliases, link expiration/TTL, and
-rate limiting moved from "out of scope" to implemented — see above.)
+Auth/ownership — not yet addressed. (Custom aliases, link expiration/TTL, rate
+limiting, and the two reliability improvements above moved from "out of scope"
+to implemented.)

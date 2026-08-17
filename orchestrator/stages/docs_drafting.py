@@ -44,6 +44,17 @@ Return click analytics for a link. 404 if the alias is unknown. Still returns
 
 Response: `{"alias": "...", "long_url": "...", "created_at": "...", "expires_at": null, "click_count": N,
 "clicks": [{"timestamp": "...", "referrer": "..."}]}`
+
+## GET /healthz
+Readiness check for monitoring/load-balancer probes. Verifies DB connectivity, not just
+process liveness. Not rate-limited.
+
+Response (200): `{"status": "ok"}`
+Response (503): DB unreachable.
+
+Writes on link creation and click recording retry automatically (bounded, with backoff)
+on transient SQLite write-lock contention — no client-visible change, just fewer spurious
+failures under concurrent load.
 """
 
 

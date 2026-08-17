@@ -102,6 +102,85 @@ RATE_LIMIT_NORMALIZED = (
     "current time window. Read paths (redirect, stats) are explicitly out of scope for rate limiting."
 )
 
+# --- Ambiguous scenario: "make it more reliable" (design-log.md Section 8) ---
+#
+# Unlike every scenario above, this raw requirement names no concrete
+# feature at all — "reliable" could mean a dozen different things. The
+# candidates below are the actual disambiguation reasoning, each recorded
+# as its own decision in the run's decision log (not just this comment),
+# per the requirement that this reasoning be part of the audit trail a
+# reviewer can inspect in state.json, not something that only exists in
+# chat or as source commentary.
+
+RELIABILITY_CANDIDATES = [
+    # (candidate name, what it is, verdict, why)
+    (
+        "Concurrent-write availability",
+        "Add bounded retry + exponential backoff for SQLite 'database is locked' on the service's write "
+        "paths (link creation, click recording).",
+        "SELECTED",
+        "SQLite's single-writer model makes lock contention a real risk under concurrent load, not a "
+        "hypothetical one, and 'availability under load' was already named as a target in design-log.md "
+        "Section 1 but never concretely implemented anywhere in the codebase until now.",
+    ),
+    (
+        "Operational health/readiness signal",
+        "Add a GET /healthz endpoint that verifies DB connectivity, not just process liveness.",
+        "SELECTED",
+        "This is a standard reliability primitive for any service meant to run behind a monitor or load "
+        "balancer, and the service currently has no way to answer 'is this instance actually healthy?' "
+        "at all.",
+    ),
+    (
+        "Structured logging / observability",
+        "Add structured request/error logging or a metrics export path.",
+        "DEFERRED",
+        "Orthogonal to the two concrete gaps above; adding it would mean deciding a log format, "
+        "destination, and correlation-ID scheme without a specific failure mode it fixes today. Revisit "
+        "if a concrete debugging need arises.",
+    ),
+    (
+        "Circuit breaker / external dependency resilience",
+        "Add circuit-breaker logic around downstream service calls.",
+        "DEFERRED",
+        "Not applicable to this architecture: the service has zero external network dependencies "
+        "(SQLite is local and in-process), so this would be solving a failure mode the current system "
+        "cannot actually experience.",
+    ),
+    (
+        "Distributed rate limiting",
+        "Move the existing in-memory rate limiter to a shared store (e.g. Redis) so limits hold across "
+        "multiple app instances.",
+        "DEFERRED",
+        "This addresses horizontal-scaling reliability, a deployment-topology concern orthogonal to a "
+        "single instance's reliability, and the in-memory limitation was already surfaced explicitly in "
+        "design-log.md Section 9 rather than silently ignored; changing it now would be scope creep "
+        "against an already-documented, already-accepted trade-off.",
+    ),
+]
+
+RELIABILITY_NORMALIZED = (
+    "Ambiguous requirement disambiguated to two concrete, testable reliability improvements: (1) bounded "
+    "retry with backoff for SQLite write-lock contention on link creation and click recording, and (2) a "
+    "GET /healthz endpoint verifying DB connectivity for operational monitoring. Other candidate "
+    "interpretations (structured logging, circuit breakers, distributed rate limiting) were considered "
+    "and explicitly deferred — see this run's decision log for the reasoning behind each."
+)
+
+RELIABILITY_ASSUMPTIONS = [
+    "\"More reliable\" is scoped to availability-under-load and operational monitoring — the two most "
+    "concrete, already-named gaps against design-log.md Section 1's own 'availability under load' "
+    "target — not treated as a general invitation to add every reliability-adjacent feature.",
+    "SQLite write-lock retry uses bounded attempts (3) with exponential backoff, mirroring the same "
+    "bounded-retry philosophy already used for alias-generation collisions (shortener.py) and the "
+    "orchestration engine itself (orchestrator/retry.py) — an existing pattern applied to a new "
+    "transient-failure class, not a new pattern invented for this feature.",
+    "/healthz checks DB connectivity (SELECT 1), not just process liveness, since a process that's up "
+    "but can't reach its only dependency is not actually healthy for this service's purposes.",
+    "/healthz is added to shortener.py's RESERVED_ALIASES (alongside 'api') so a custom alias can never "
+    "shadow it — the same reserved-word mechanism the greenfield custom-alias scenario introduced.",
+]
+
 
 def handler(state: RunState) -> None:
     raw = state.requirement.raw.strip()
@@ -119,6 +198,23 @@ def handler(state: RunState) -> None:
         state.requirement.normalized = RATE_LIMIT_NORMALIZED
         state.requirement.assumptions = list(RATE_LIMIT_ASSUMPTIONS)
         rationale = "brownfield scenario (2/2): rate limiting (design-log.md Section 8)"
+    elif "more reliable" in raw_lower or "reliability" in raw_lower:
+        state.requirement.normalized = RELIABILITY_NORMALIZED
+        state.requirement.assumptions = list(RELIABILITY_ASSUMPTIONS)
+        rationale = (
+            "ambiguous scenario: the raw requirement names no concrete feature, disambiguated via "
+            "explicit candidate analysis — see the [SELECTED]/[DEFERRED] decisions recorded below"
+        )
+        # This loop IS the disambiguation reasoning the ambiguous scenario is meant to
+        # demonstrate — each candidate becomes its own entry in state.decisions, inspectable
+        # in state.json, not just narrated in a comment or in chat.
+        for name, description, verdict, why in RELIABILITY_CANDIDATES:
+            state.add_decision(
+                stage="requirements",
+                decision=f"[{verdict}] {name}: {description}",
+                rationale=why,
+                actor="agent",
+            )
     elif not raw or "url shortener" in raw_lower or "core apis" in raw_lower:
         state.requirement.normalized = BASELINE_NORMALIZED
         state.requirement.assumptions = list(BASELINE_ASSUMPTIONS)

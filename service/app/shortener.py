@@ -33,7 +33,11 @@ ALIAS_LENGTH = 7
 MAX_ALIAS_ATTEMPTS = 5
 
 CUSTOM_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
-RESERVED_ALIASES = {"api"}  # avoid confusion with the existing /api/* route prefix
+# "api" avoids confusion with the /api/* route prefix; "healthz" avoids a
+# custom alias shadowing the health-check route added in the ambiguous
+# scenario (design-log.md Section 8) — both are exact-match single-segment
+# routes registered ahead of the GET /{alias} catch-all.
+RESERVED_ALIASES = {"api", "healthz"}
 
 
 class AliasGenerationError(Exception):
@@ -104,12 +108,19 @@ def _find_link(alias: str) -> sqlite3.Row | None:
 
 
 def _insert_link(alias: str, long_url: str, expires_at: str | None) -> None:
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO links (alias, long_url, created_at, expires_at) VALUES (?, ?, ?, ?)",
-            (alias, long_url, datetime.now(timezone.utc).isoformat(), expires_at),
-        )
-        conn.commit()
+    def _do_insert() -> None:
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO links (alias, long_url, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (alias, long_url, datetime.now(timezone.utc).isoformat(), expires_at),
+            )
+            conn.commit()
+
+    # Bounded retry for "database is locked" (design-log.md Section 8,
+    # ambiguous scenario). sqlite3.IntegrityError (alias collision) is a
+    # different exception type and is NOT retried here — it propagates
+    # immediately to the collision-handling logic in create_link().
+    db.execute_with_retry(_do_insert)
 
 
 def create_link(

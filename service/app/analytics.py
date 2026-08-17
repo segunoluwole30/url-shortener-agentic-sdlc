@@ -13,12 +13,19 @@ from . import db
 
 
 def record_click(alias: str, referrer: str | None) -> None:
-    with db.get_conn() as conn:
-        conn.execute(
-            "INSERT INTO clicks (alias, timestamp, referrer) VALUES (?, ?, ?)",
-            (alias, datetime.now(timezone.utc).isoformat(), referrer),
-        )
-        conn.commit()
+    def _do_insert() -> None:
+        with db.get_conn() as conn:
+            conn.execute(
+                "INSERT INTO clicks (alias, timestamp, referrer) VALUES (?, ?, ?)",
+                (alias, datetime.now(timezone.utc).isoformat(), referrer),
+            )
+            conn.commit()
+
+    # Bounded retry for "database is locked" (design-log.md Section 8,
+    # ambiguous scenario) — click recording is on the hot path (every
+    # redirect writes one), making it the write most exposed to concurrent
+    # contention.
+    db.execute_with_retry(_do_insert)
 
 
 def get_stats(alias: str) -> dict | None:

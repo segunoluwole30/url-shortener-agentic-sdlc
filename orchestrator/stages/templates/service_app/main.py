@@ -7,6 +7,7 @@ service/docs/DESIGN.md for the architecture.
 """
 from __future__ import annotations
 
+import sqlite3
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -66,6 +67,23 @@ def link_stats(alias: str) -> LinkStats:
     if stats is None:
         raise HTTPException(status_code=404, detail="unknown alias")
     return LinkStats(**stats)
+
+
+@app.get("/healthz")
+def health_check():
+    """Readiness check (design-log.md Section 8, ambiguous scenario — see
+    the run's decision log for why this was selected). Verifies DB
+    connectivity, not just process liveness: a process that's up but can't
+    reach its only dependency isn't actually healthy for this service. Not
+    rate-limited — monitors need this reachable regardless of creation load.
+    Registered ahead of GET /{alias} and reserved in shortener.py's
+    RESERVED_ALIASES so a custom alias can never shadow it."""
+    try:
+        with db.get_conn() as conn:
+            conn.execute("SELECT 1")
+    except sqlite3.OperationalError:
+        raise HTTPException(status_code=503, detail="database unreachable")
+    return {"status": "ok"}
 
 
 @app.get("/{alias}")

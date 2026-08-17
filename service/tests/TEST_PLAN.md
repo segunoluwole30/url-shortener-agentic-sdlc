@@ -28,6 +28,11 @@ Derived from design-log.md Section 1 assumptions + service/docs/DESIGN.md.
 | 22 | POST /api/links repeated beyond RATE_LIMIT_MAX_REQUESTS within the window | 429, with a Retry-After header |
 | 23 | POST /api/links after the rate-limit window has elapsed | 201 again — limit resets |
 | 24 | GET /{alias} repeated many times | never 429 — redirects are not rate-limited |
+| 25 | db.execute_with_retry recovers from transient "database is locked" within max attempts | returns the wrapped call's result |
+| 26 | db.execute_with_retry exhausts max attempts against a persistent lock | re-raises the OperationalError |
+| 27 | db.execute_with_retry against a non-lock OperationalError | re-raises immediately, no retry |
+| 28 | GET /healthz | 200 `{"status": "ok"}` |
+| 29 | POST /api/links with custom_alias == "healthz" | 422 (reserved) |
 
 Implemented as `service/tests/test_api.py` by the test_execution stage, run against
 a temporary SQLite DB (via SHORTENER_DB_PATH override) so pipeline runs never

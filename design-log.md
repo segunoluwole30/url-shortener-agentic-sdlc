@@ -338,10 +338,99 @@ branch, both approvals hit and approved, `test_execution` ran 24 real pytest cas
 - Live `uvicorn` smoke test with `RATE_LIMIT_MAX_REQUESTS=3`: 3 creates succeed, 4th
   returns 429 with `Retry-After: 60`; 5 rapid redirect requests in the same window
   are never rate-limited.
-### Ambiguous —
+### Ambiguous — "make it more reliable"
+
+**Requirement (raw):** "Make it more reliable." No concrete feature named — this
+is genuinely ambiguous, unlike the greenfield/brownfield scenarios above.
+
+**Disambiguation reasoning:** recorded as five actual decisions in the run's
+decision log (`state.json`, `stage: "requirements"`), not just narrated here —
+see `orchestrator/stages/requirements.py`'s `RELIABILITY_CANDIDATES` and the
+handler loop that turns each candidate into its own `state.add_decision()` call:
+
+| Candidate | Verdict | Why |
+|---|---|---|
+| Concurrent-write availability (bounded retry + backoff on SQLite lock contention) | **SELECTED** | SQLite's single-writer model makes write-lock contention a real risk under concurrent load, not hypothetical, and "availability under load" was already named as a target in Section 1 but never concretely implemented. |
+| Operational health/readiness signal (`GET /healthz`, DB-connectivity check) | **SELECTED** | Standard reliability primitive for anything behind a monitor/load balancer; the service had no way to answer "is this instance actually healthy?" at all. |
+| Structured logging / observability | DEFERRED | Orthogonal to the two gaps above; would require deciding a log format/destination/correlation scheme with no specific failure mode driving it today. |
+| Circuit breaker / external dependency resilience | DEFERRED | Not applicable — the service has zero external network dependencies (SQLite is local, in-process); this would solve a failure mode the architecture can't experience. |
+| Distributed rate limiting (shared store across instances) | DEFERRED | A deployment-topology concern, not single-instance reliability; the in-memory limitation was already surfaced explicitly in Section 9 rather than hidden — revisiting it now would be scope creep against an already-accepted trade-off. |
+
+**What got built:**
+- `db.execute_with_retry()`: bounded retry (3 attempts) + exponential backoff,
+  scoped specifically to `sqlite3.OperationalError` messages containing "locked"
+  — a non-lock `OperationalError` is NOT retried, since retrying a genuine bug
+  just delays the same failure. Wired into the two hot write paths: link
+  creation (`shortener._insert_link`) and click recording
+  (`analytics.record_click`).
+- `GET /healthz`: checks DB connectivity (`SELECT 1`), not just process
+  liveness; not rate-limited (monitors need it reachable regardless of
+  creation-endpoint load); `"healthz"` added to `RESERVED_ALIASES` alongside
+  `"api"` so a custom alias can never shadow the route.
+
+**Orchestration:** ran via `python cli.py run --requirement "Make it more
+reliable"` (`runs/run-20260817T164154-cd3bf5/`) — `requirements` correctly
+matched the ambiguous-scenario branch and recorded all five candidate
+decisions, both approvals hit and approved, `test_execution` ran 29 real
+pytest cases (24 prior + 5 new) and passed, `overall_status: complete`.
+
+**Bug caught during implementation:** the first version of the candidate loop
+put the full deferral reasoning into the `verdict` field instead of a short
+tag, producing a malformed `decision` string
+(`[DEFERRED — orthogonal to...] Structured logging`). Caught by actually
+reading the generated `state.json` rather than trusting the code, fixed by
+splitting into separate `verdict`/`why` fields, and re-verified.
+
+**Validation:**
+- Full suite 36/36 (7 orchestrator + 29 service).
+- Dedicated unit tests for `execute_with_retry`: recovers within budget,
+  exhausts and re-raises after max attempts, does NOT retry a non-lock
+  `OperationalError` (verified via call-count assertion, not just the
+  exception type).
+- Live `uvicorn` smoke test: `GET /healthz` → `200 {"status": "ok"}`;
+  `custom_alias="healthz"` → `422`; normal creation still works.
 
 ---
 
 ## 9. Risks / Trade-offs / Limitations
 
 _(Running list — feeds directly into Final Engineering Summary)_
+
+**Service (`service/`):**
+- **Rate limiting is in-memory, single-process** (Section 8, brownfield): doesn't survive
+  a restart, not shared across multiple app instances behind a load balancer. Acceptable
+  for this prototype; a real multi-instance deployment would need a shared store (Redis
+  or similar) — explicitly named and deferred, not the selected fix, in the ambiguous
+  scenario's disambiguation (Section 8).
+- **SQLite is single-writer.** `db.execute_with_retry()` (Section 8, ambiguous scenario)
+  gives bounded resilience against transient lock contention, but doesn't remove the
+  ceiling — sustained heavy concurrent write load would still degrade. A production
+  deployment at real scale would need a different datastore, not just retry logic.
+- **No background TTL sweep.** Expired links (Section 8, brownfield) are never actively
+  deleted, only made unreachable via redirect — the `links`/`clicks` tables grow
+  unboundedly over time. A real deployment would need a periodic cleanup job.
+- **Small TOCTOU window on custom-alias creation.** The check-then-insert sequence in
+  `shortener.create_link` is *not* fully eliminated by the `IntegrityError`-to-409
+  fallback — that fallback only catches the race at the DB-constraint level, which is
+  correct but means the "already taken" check itself can still read stale state under
+  extreme concurrency. Not a correctness bug (the constraint is authoritative), just a
+  note that the pre-check is an optimization, not the actual guarantee.
+- **No auth/ownership** (Section 1, still out of scope): any client can create links,
+  read any link's stats, or (with the right custom alias) claim any available alias.
+  Acceptable for a v1 prototype; would need to be addressed before any real deployment.
+- **Reserved-alias list is manually maintained** (`RESERVED_ALIASES` in `shortener.py`):
+  every new top-level route (like `/healthz`) has to remember to add itself, or it risks
+  being shadowed by a custom alias. No automated route-discovery check exists to catch
+  a forgotten addition.
+
+**Orchestration engine (`orchestrator/`):**
+- **Run state is JSON-file-per-run, not a database.** Fine for a single-user prototype
+  with sequential runs; wouldn't scale to many concurrent runs or team usage without a
+  real datastore and locking model.
+- **No resume-from-run-id.** A `blocked` run (rollback fired, retries/fallback
+  exhausted, or an approval was rejected) must be fixed and restarted as a fresh run —
+  there's no mechanism to pick a specific run back up mid-graph.
+- **Approval checkpoints are CLI-blocking** (`input()`): works well for a single
+  interactive terminal session (this prototype's actual use case), but doesn't
+  generalize to a team-based or asynchronous approval workflow — a real system would
+  need a persisted "pending approval" state a different process/person could act on.
