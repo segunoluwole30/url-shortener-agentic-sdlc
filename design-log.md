@@ -38,6 +38,8 @@ out of scope for v1 unless a scenario calls for them.
 
 **Structure:**
 
+![Stage graph: requirements → design (human approval) → parallel fan-out into implementation/test_planning/docs_drafting → sync points A and B → release_readiness (human approval)](assets/stage-graph.webp)
+
 ```
 requirements
    ↓

@@ -17,6 +17,8 @@ plan/rationale/risks/assumptions write-up, and
 project was built against (locked stage graph, state schema, gates, retry
 rules, and per-scenario notes).
 
+![Stage graph: requirements → design (human approval) → parallel fan-out into implementation/test_planning/docs_drafting → sync points A and B → release_readiness (human approval)](assets/stage-graph.webp)
+
 ---
 
 ## Setup
