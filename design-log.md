@@ -163,6 +163,28 @@ actually ready to ship?) rather than something a predicate can verify.
 (`overall_status = "blocked"`) — no retry, since re-running identical content
 against a human "no" isn't a transient failure. See Section 6.
 
+Both checkpoints share the same mechanics (no retry, exit code 1, `overall_status:
+blocked`, and — nothing erased — both the agent's original decision and the human's
+rejection stay visible in `state.json`'s `decisions`/`history`), verified live for
+each:
+
+- **Rejecting `design`:** rollback is total for that stage — its `artifacts` entry
+  goes back to empty, status to `blocked`. Only `requirements` had completed before
+  this point, so there's nothing else to be scoped away from.
+- **Rejecting `release_readiness`:** rollback is scoped to `release_readiness`
+  alone. All 6 upstream stages (`requirements` through `docs_finalize`) still show
+  `status: complete` — rejecting the final sign-off does **not** unwind any of the
+  work that got there. Verified directly: after a `release_readiness` rejection,
+  `service/app/*.py`, `service/tests/test_api.py`, and `service/docs/*.md` are all
+  fully present on disk, and running `pytest service/tests/test_api.py` against
+  that "rejected" build passes all 26 tests — the code is genuinely real and
+  functional, just not signed off. This is the correct semantics for a final-gate
+  rejection (withhold sign-off, don't discard six stages of validated output), but
+  it does mean a rejected run leaves real build artifacts sitting on disk in an
+  unapproved state — same caveat as the design case: nothing physically cleans
+  them up, and there's no resume-from-run-id to pick the run back up either way
+  (Section 9).
+
 **State visibility during the pause:** `runner.py` flushes `state.json` right
 before blocking on the prompt, not after — the stage's handler has already run
 by that point (it produces the artifact/decision the human is being asked to
